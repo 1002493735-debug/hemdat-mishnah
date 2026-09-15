@@ -85,7 +85,7 @@ async function answer(d,lid,sid,option){
  return {result:'correct',tractate_completed:n===total?tractate:null,all_completed:!!rnd.finished_at,bonus_round:rnd.finished_at&&rnd.number===1?2:null};
 }
 const studentQuery=`SELECT s.id,s.name,c.name AS class_name,COALESCE(SUM(t.delta),0) AS tickets FROM students s JOIN classes c ON c.id=s.class_id LEFT JOIN tickets t ON t.student_id=s.id`;
-const classQuery=`SELECT c.id,c.name,count(x.id) AS contribution FROM classes c LEFT JOIN completions x ON x.class_id=c.id AND x.revoked_at IS NULL GROUP BY c.id ORDER BY c.name`;
+const classQuery=`SELECT c.id,c.name,count(x.id) AS contribution FROM classes c LEFT JOIN completions x ON x.class_id=c.id AND x.revoked_at IS NULL GROUP BY c.id HAVING count(x.id)>0 OR EXISTS(SELECT 1 FROM students s WHERE s.class_id=c.id AND s.active=1) ORDER BY c.name`;
 function csv(columns,rows){const cell=v=>{let s=String(v??'');if(typeof v==='string'&&/^[\s]*[=+@\-\t\r]/.test(v))s="'"+s;return '"'+s.replaceAll('"','""')+'"';};return '\uFEFF'+[columns,...rows.map(r=>columns.map(c=>r[c]))].map(row=>row.map(cell).join(',')).join('\r\n');}
 async function admin(d,route,b,url){
  const record=(action,details)=>d.p('INSERT INTO audit(at,actor,action,details) VALUES(?,?,?,?)',now(),'admin',action,JSON.stringify(details));
@@ -158,7 +158,7 @@ async function handle(req,env){
  const getRoutes=['me','roster','state','board','admin/data','admin/export','admin/backup'];check(method===(getRoutes.includes(route)?'GET':'POST'),'פעולה לא מותרת',405);
  if(route==='me')return json({role:s.role,student_id:s.student_id,csrf:s.csrf});
  if(route==='logout'){await d.run('DELETE FROM sessions WHERE token_hash=?',s.token_hash);return json({ok:true},200,{'Set-Cookie':'session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0'});}
- if(route==='roster')return json({classes:await d.all('SELECT * FROM classes ORDER BY name'),students:await d.all('SELECT id,name,class_id FROM students WHERE active=1 ORDER BY name')});
+ if(route==='roster')return json({classes:await d.all('SELECT * FROM classes c WHERE EXISTS(SELECT 1 FROM students s WHERE s.class_id=c.id AND s.active=1) ORDER BY name'),students:await d.all('SELECT id,name,class_id FROM students WHERE active=1 ORDER BY name')});
  if(route==='select'){check(['school','student'].includes(s.role),'כניסה זו מיועדת לתלמידים',403);check(await d.one('SELECT 1 FROM students WHERE id=? AND active=1',b.student_id),'התלמיד לא נמצא');return makeSession(d,req,'student',b.student_id);}
  if(route==='state'){const round=await current(d)||await d.one('SELECT * FROM rounds ORDER BY number DESC LIMIT 1');return json({structure,total:149,round,completed:(await d.all('SELECT mishnah_id FROM completions WHERE round_id=? AND revoked_at IS NULL',round.id)).map(r=>r.mishnah_id),statuses:Object.fromEntries((await d.all('SELECT mishnah_id,status FROM content')).map(r=>[r.mishnah_id,r.status])),my_tickets:(await d.one('SELECT COALESCE(SUM(delta),0) n FROM tickets WHERE student_id=?',s.student_id)).n});}
  if(route==='board')return json({students:await d.all(studentQuery+' WHERE s.active=1 GROUP BY s.id ORDER BY c.name,s.name'),classes:await d.all(classQuery),recent:await d.all('SELECT c.name AS class_name,m.tractate,x.completed_at FROM completions x JOIN classes c ON c.id=x.class_id JOIN mishnayot m ON m.id=x.mishnah_id WHERE x.revoked_at IS NULL ORDER BY x.id DESC LIMIT 10')});
