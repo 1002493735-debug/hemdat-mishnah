@@ -76,7 +76,7 @@ def init_db(path, demo=True):
                     {"id":"demo-2","name":"תלמידה לדוגמה ב","class_id":"demo-a","class_name":"כיתת הדגמה א"},
                     {"id":"demo-3","name":"תלמיד לדוגמה ג","class_id":"demo-b","class_name":"כיתת הדגמה ב"},
                     {"id":"demo-4","name":"תלמידה לדוגמה ד","class_id":"demo-b","class_name":"כיתת הדגמה ב"}], True)
-                rows = json.loads((ROOT / "data/samples.json").read_text())
+                rows = json.loads((ROOT / "data/content.json").read_text())
                 report = validate_content(rows)
                 if report["errors"]:
                     raise RuntimeError(report["errors"])
@@ -285,7 +285,7 @@ def create_app(config=None):
     if config:
         app.config.update(config)
     require(len(app.config["ADMIN_PASSWORD"])>=12,"ADMIN_PASSWORD must contain at least 12 characters")
-    require(len(app.config["SCHOOL_CODE"])>=6,"SCHOOL_CODE must contain at least 6 characters")
+    require(len(app.config["SCHOOL_CODE"])>=4,"SCHOOL_CODE must contain at least 4 characters")
     init_db(app.config["DATABASE_PATH"],os.getenv("SEED_DEMO","1")=="1")
 
     @app.after_request

@@ -16,3 +16,6 @@ jobs:
         with:
           node-version: "22"
       - run: node --check static/app.js
+      - run: npm ci
+      - run: npm run build
+      - run: npm test

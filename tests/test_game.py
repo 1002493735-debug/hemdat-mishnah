@@ -33,7 +33,7 @@ class GameTests(unittest.TestCase):
             self.assertEqual(TOTAL,149)
             self.assertEqual(db.execute("SELECT count(*) FROM chapters").fetchone()[0],17)
             self.assertEqual(db.execute("SELECT count(*) FROM mishnayot").fetchone()[0],149)
-            self.assertEqual(db.execute("SELECT count(*) FROM content WHERE status='ready'").fetchone()[0],6)
+            self.assertEqual(db.execute("SELECT count(*) FROM content WHERE status='ready'").fetchone()[0],149)
     def test_parallel_acquisition(self):
         def run(sid):
             try:return self.lease(sid)["id"]

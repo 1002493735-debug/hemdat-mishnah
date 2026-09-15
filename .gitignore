@@ -5,3 +5,10 @@ __pycache__/
 *.db-*
 .venv/
 backups/
+node_modules/
+dist/
+.wrangler/
+.openai/execution-profile.json
+test-results/
+playwright-report/
+*.zip

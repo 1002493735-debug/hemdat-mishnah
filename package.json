@@ -1,0 +1,21 @@
+{
+  "name": "hemdat-mishnah",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test tests/worker.test.mjs",
+    "db:generate": "drizzle-kit generate",
+    "dev": "node scripts/dev.mjs"
+  },
+  "devDependencies": {
+    "drizzle-kit": "0.31.4",
+    "drizzle-orm": "0.44.5",
+    "esbuild": "0.25.9",
+    "miniflare": "4.20250906.0"
+  },
+  "dependencies": {
+    "fflate": "^0.8.2"
+  }
+}
