@@ -21,7 +21,7 @@ const cookie=req=>(req.headers.get('cookie')||'').match(/(?:^|;\s*)session=([^;]
 async function makeSession(d,req,role,sid=null){
  const t=token(),csrf=token();
  await d.db.batch([d.p('DELETE FROM sessions WHERE token_hash=?',await hash(cookie(req))),d.p('INSERT INTO sessions VALUES(?,?,?,?,?)',await hash(t),sid,role,csrf,now()+28800)]);
- return json({role,student_id:sid,csrf},200,{'Set-Cookie':`session=${t}; Path=/; HttpOnly; ${d.devHTTP?'':'Secure; '}SameSite=Strict; Max-Age=28800`});
+ return json({role,student_id:sid,csrf,is_staff:sid?!!(await d.one('SELECT is_staff FROM students WHERE id=?',sid))?.is_staff:false},200,{'Set-Cookie':`session=${t}; Path=/; HttpOnly; ${d.devHTTP?'':'Secure; '}SameSite=Strict; Max-Age=28800`});
 }
 async function auth(d,req){
  const s=await d.one('SELECT * FROM sessions WHERE token_hash=? AND expires_at>?',await hash(cookie(req)),now());check(s,'נדרשת כניסה',401);
@@ -100,17 +100,18 @@ async function answer(d,lid,sid,option){
  const tractate=l.mishnah_id.split(':')[0],t=structure.find(t=>t.id===tractate),total=t.chapters.reduce((a,b)=>a+b,0);
  const {n}=await d.one('SELECT COUNT(*) n FROM completions c JOIN mishnayot m ON m.id=c.mishnah_id WHERE c.round_id=? AND c.revoked_at IS NULL AND m.tractate=?',l.round_id,tractate);
  const rnd=await d.one('SELECT * FROM rounds WHERE id=?',l.round_id);
- return {result:'correct',tractate_completed:n===total?tractate:null,all_completed:!!rnd.finished_at,bonus_round:rnd.finished_at&&rnd.number===1?2:null};
+ return {result:'correct',ticket_awarded:!!(await d.one('SELECT 1 FROM tickets WHERE completion_id IN(SELECT id FROM completions WHERE round_id=? AND mishnah_id=? AND student_id=? AND revoked_at IS NULL)',l.round_id,l.mishnah_id,sid)),tractate_completed:n===total?tractate:null,all_completed:!!rnd.finished_at,bonus_round:rnd.finished_at&&rnd.number===1?2:null};
 }
 const studentQuery=`SELECT s.id,s.name,c.name AS class_name,COALESCE(SUM(t.delta),0) AS tickets FROM students s JOIN classes c ON c.id=s.class_id LEFT JOIN tickets t ON t.student_id=s.id`;
 const classQuery=`SELECT c.id,c.name,count(x.id) AS contribution FROM classes c LEFT JOIN completions x ON x.class_id=c.id AND x.revoked_at IS NULL GROUP BY c.id HAVING count(x.id)>0 OR EXISTS(SELECT 1 FROM students s WHERE s.class_id=c.id AND s.active=1) ORDER BY c.name`;
 function csv(columns,rows){const cell=v=>{let s=String(v??'');if(typeof v==='string'&&/^[\s]*[=+@\-\t\r]/.test(v))s="'"+s;return '"'+s.replaceAll('"','""')+'"';};return '\uFEFF'+[columns,...rows.map(r=>columns.map(c=>r[c]))].map(row=>row.map(cell).join(',')).join('\r\n');}
 async function admin(d,route,b,url){
  const record=(action,details)=>d.p('INSERT INTO audit(at,actor,action,details) VALUES(?,?,?,?)',now(),'admin',action,JSON.stringify(details));
- const backupSchema={classes:['id','name'],students:['id','name','class_id','active'],rounds:['id','number','started_at','finished_at'],content:['mishnah_id','text','questions','source','status','revision'],completions:['id','round_id','mishnah_id','student_id','class_id','completed_at','revoked_at','content_revision'],tickets:['id','student_id','delta','completion_id','reason','created_at'],audit:['id','at','actor','action','details'],settings:['key','value']};
+ const backupSchema={classes:['id','name'],students:['id','name','class_id','active','is_staff'],rounds:['id','number','started_at','finished_at'],content:['mishnah_id','text','questions','source','status','revision'],completions:['id','round_id','mishnah_id','student_id','class_id','completed_at','revoked_at','content_revision'],tickets:['id','student_id','delta','completion_id','reason','created_at'],audit:['id','at','actor','action','details'],settings:['key','value']};
  if(route==='admin/backup'){const tables={},names=Object.keys(backupSchema),results=await d.db.batch(names.map(t=>d.p('SELECT * FROM '+t)));names.forEach((t,i)=>tables[t]=results[i].results);return new Response(JSON.stringify({format:'hemdat-backup-v1',created_at:now(),tables},null,2),{headers:{'Content-Type':'application/json; charset=utf-8','Content-Disposition':'attachment; filename="hemdat-backup.json"'}});}
  if(route==='admin/restore'){
   check(b.confirm==='שחזור','נדרש אישור שחזור מפורש');const data=b.backup;check(data?.format==='hemdat-backup-v1'&&data.tables,'קובץ גיבוי לא תקין');
+  if(Array.isArray(data.tables.students))for(const row of data.tables.students){if(row.is_staff===undefined)row.is_staff=0;check([0,1].includes(row.is_staff),'סוג משתתף לא תקין');}
   let count=0;for(const [t,columns] of Object.entries(backupSchema)){check(Array.isArray(data.tables[t]),'טבלה חסרה בגיבוי: '+t);for(const row of data.tables[t]){count++;check(row&&columns.every(c=>c in row)&&Object.keys(row).every(c=>columns.includes(c)),'מבנה רשומה לא תקין: '+t);check(Object.values(row).every(v=>v===null||typeof v==='string'||typeof v==='number'),'ערך לא תקין בגיבוי');}}
   check(count<=10000,'הגיבוי גדול מדי לשחזור דרך האתר');
   const report=validateContent(data.tables.content.map(r=>({id:r.mishnah_id,text:r.text,source:r.source,status:r.status,questions:JSON.parse(r.questions)})),true);check(!report.errors.length,'תוכן לא תקין בגיבוי: '+report.errors.join('; '));
@@ -125,11 +126,11 @@ async function admin(d,route,b,url){
  }
  if(route==='admin/data'){const data={};for(const table of ['rounds','classes','students','settings','completions','tickets','content'])data[table]=await d.all('SELECT * FROM '+table);data.audit=await d.all('SELECT * FROM audit ORDER BY id DESC LIMIT 200');return data;}
  if(route==='admin/import'){
-  check(['content','students'].includes(b.kind),'סוג ייבוא לא תקין');const rows=b.rows,report=b.kind==='content'?validateContent(rows,b.full===true):validateStudents(rows);
-  if(b.kind==='students'&&!report.errors.length){const classes=await d.all('SELECT * FROM classes');for(const r of rows)if(classes.some(c=>c.name===r.class_name&&c.id!==r.class_id))report.errors.push('שם כיתה קיים עם מזהה אחר: '+r.class_name);}
+  check(['content','students','staff'].includes(b.kind),'סוג ייבוא לא תקין');const rows=b.kind==='staff'&&Array.isArray(b.rows)?b.rows.map(r=>({id:r?.id,name:r?.name,class_id:'staff',class_name:'צוות'})):b.rows,report=b.kind==='content'?validateContent(rows,b.full===true):validateStudents(rows);
+  if(b.kind!=='content'&&!report.errors.length){const people=await d.all('SELECT id,is_staff FROM students');for(const r of rows){const existing=people.find(p=>p.id===r.id);if(existing&&existing.is_staff!==(b.kind==='staff'?1:0))report.errors.push('לא ניתן להחליף סוג משתתף בייבוא: '+r.id);if(b.kind==='students'&&r.class_id==='staff')report.errors.push('יש לייבא אנשי צוות באמצעות סוג הייבוא צוות');}const classes=await d.all('SELECT * FROM classes');for(const r of rows)if(classes.some(c=>c.name===r.class_name&&c.id!==r.class_id))report.errors.push('שם כיתה קיים עם מזהה אחר: '+r.class_name);}
   if(!report.errors.length&&b.apply===true){const stmts=[];
    if(b.kind==='content')for(const r of rows)stmts.push(d.p('UPDATE content SET text=?,questions=?,status=?,source=?,revision=revision+1 WHERE mishnah_id=?',r.text,JSON.stringify(r.questions),r.status,r.source||'',r.id));
-   else {for(const [id,name] of new Map(rows.map(r=>[r.class_id,r.class_name])))stmts.push(d.p('INSERT INTO classes VALUES(?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name',id,name));for(const r of rows)stmts.push(d.p('INSERT INTO students(id,name,class_id) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,class_id=excluded.class_id',r.id,r.name,r.class_id));}
+   else {for(const [id,name] of new Map(rows.map(r=>[r.class_id,r.class_name])))stmts.push(d.p('INSERT INTO classes VALUES(?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name',id,name));for(const r of rows)stmts.push(d.p('INSERT INTO students(id,name,class_id,is_staff) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,class_id=excluded.class_id',r.id,r.name,r.class_id,b.kind==='staff'?1:0));}
    stmts.push(record('import',{kind:b.kind,count:rows.length}));await d.db.batch(stmts);report.applied=true;
   }return report;
  }
@@ -138,7 +139,7 @@ async function admin(d,route,b,url){
   await d.db.batch([...stmts,record('settings',b)]);return {ok:true};
  }
  if(route==='admin/ticket'){
-  check([-1,1].includes(b.delta),'יש לבחור הוספה או הסרה של כרטיס אחד');check(typeof b.reason==='string'&&b.reason.trim()&&b.reason.length<=300,'יש לציין סיבת תיקון');check(await d.one('SELECT 1 FROM students WHERE id=?',b.student_id),'תלמיד לא נמצא');
+  check([-1,1].includes(b.delta),'יש לבחור הוספה או הסרה של כרטיס אחד');check(typeof b.reason==='string'&&b.reason.trim()&&b.reason.length<=300,'יש לציין סיבת תיקון');check(await d.one('SELECT 1 FROM students WHERE id=? AND is_staff=0',b.student_id),'כרטיסי הגרלה מיועדים לתלמידים בלבד');
   await d.db.batch([d.p('INSERT INTO tickets(student_id,delta,reason,created_at) VALUES(?,?,?,?)',b.student_id,b.delta,b.reason,now()),record('ticket',b)]);return {ok:true};
  }
  if(route==='admin/revoke'){
@@ -153,8 +154,9 @@ async function admin(d,route,b,url){
  if(route==='admin/export'){
   const kind=url.searchParams.get('kind')||'tickets';let rows,columns;
   if(kind==='content'){rows=(await d.all('SELECT * FROM content')).map(r=>({id:r.mishnah_id,text:r.text,status:r.status,source:r.source,questions:JSON.parse(r.questions)}));return new Response(JSON.stringify(rows,null,2),{headers:{'Content-Type':'application/json; charset=utf-8','Content-Disposition':'attachment; filename="content.json"'}});}
-  if(['tickets','raffle'].includes(kind)){rows=await d.all(studentQuery+' GROUP BY s.id ORDER BY c.name,s.name');if(kind==='raffle')rows=rows.flatMap(r=>Array.from({length:r.tickets},()=>r));columns=['id','name','class_name',...(kind==='tickets'?['tickets']:[])];}
-  else if(kind==='students'){rows=await d.all('SELECT s.id,s.name,s.class_id,c.name AS class_name FROM students s JOIN classes c ON c.id=s.class_id');columns=['id','name','class_id','class_name'];}
+  if(['tickets','raffle'].includes(kind)){rows=await d.all(studentQuery+' WHERE s.is_staff=0 GROUP BY s.id ORDER BY c.name,s.name');if(kind==='raffle')rows=rows.flatMap(r=>Array.from({length:r.tickets},()=>r));columns=['id','name','class_name',...(kind==='tickets'?['tickets']:[])];}
+  else if(kind==='students'){rows=await d.all('SELECT s.id,s.name,s.class_id,c.name AS class_name FROM students s JOIN classes c ON c.id=s.class_id WHERE s.is_staff=0');columns=['id','name','class_id','class_name'];}
+  else if(kind==='staff'){rows=await d.all('SELECT id,name FROM students WHERE is_staff=1 ORDER BY name');columns=['id','name'];}
   else if(kind==='classes'){rows=await d.all(classQuery);columns=['id','name','contribution'];}
   else if(kind==='completions'){rows=await d.all('SELECT * FROM completions');columns=['id','round_id','mishnah_id','student_id','class_id','completed_at','revoked_at','content_revision'];}
   else check(false,'סוג ייצוא לא תקין');
@@ -174,12 +176,12 @@ async function handle(req,env){
  if(route==='login'){check(method==='POST','פעולה לא מותרת',405);return login(d,req,env,b);}
  const s=await auth(d,req);
  const getRoutes=['me','roster','state','board','admin/data','admin/export','admin/backup'];check(method===(getRoutes.includes(route)?'GET':'POST'),'פעולה לא מותרת',405);
- if(route==='me')return json({role:s.role,student_id:s.student_id,csrf:s.csrf});
+ if(route==='me')return json({role:s.role,student_id:s.student_id,csrf:s.csrf,is_staff:s.student_id?!!(await d.one('SELECT is_staff FROM students WHERE id=?',s.student_id))?.is_staff:false});
  if(route==='logout'){await d.run('DELETE FROM sessions WHERE token_hash=?',s.token_hash);return json({ok:true},200,{'Set-Cookie':'session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0'});}
- if(route==='roster')return json({classes:await d.all('SELECT * FROM classes c WHERE EXISTS(SELECT 1 FROM students s WHERE s.class_id=c.id AND s.active=1) ORDER BY name'),students:await d.all('SELECT id,name,class_id FROM students WHERE active=1 ORDER BY name')});
+ if(route==='roster')return json({classes:await d.all('SELECT * FROM classes c WHERE EXISTS(SELECT 1 FROM students s WHERE s.class_id=c.id AND s.active=1) ORDER BY name'),students:await d.all('SELECT id,name,class_id,is_staff FROM students WHERE active=1 ORDER BY name')});
  if(route==='select'){check(['school','student'].includes(s.role),'כניסה זו מיועדת לתלמידים',403);check(await d.one('SELECT 1 FROM students WHERE id=? AND active=1',b.student_id),'התלמיד לא נמצא');return makeSession(d,req,'student',b.student_id);}
  if(route==='state'){const round=await current(d)||await d.one('SELECT * FROM rounds ORDER BY number DESC LIMIT 1');return json({structure,total:149,round,completed:(await d.all('SELECT mishnah_id FROM completions WHERE round_id=? AND revoked_at IS NULL',round.id)).map(r=>r.mishnah_id),statuses:Object.fromEntries((await d.all('SELECT mishnah_id,status FROM content')).map(r=>[r.mishnah_id,r.status])),my_tickets:(await d.one('SELECT COALESCE(SUM(delta),0) n FROM tickets WHERE student_id=?',s.student_id)).n});}
- if(route==='board')return json({students:await d.all(studentQuery+' WHERE s.active=1 GROUP BY s.id ORDER BY c.name,s.name'),classes:await d.all(classQuery),recent:await d.all('SELECT c.name AS class_name,m.tractate,x.completed_at FROM completions x JOIN classes c ON c.id=x.class_id JOIN mishnayot m ON m.id=x.mishnah_id WHERE x.revoked_at IS NULL ORDER BY x.id DESC LIMIT 10')});
+ if(route==='board')return json({students:await d.all(studentQuery+' WHERE s.active=1 AND s.is_staff=0 GROUP BY s.id ORDER BY c.name,s.name'),classes:await d.all(classQuery),recent:await d.all('SELECT c.name AS class_name,m.tractate,x.completed_at FROM completions x JOIN classes c ON c.id=x.class_id JOIN mishnayot m ON m.id=x.mishnah_id WHERE x.revoked_at IS NULL ORDER BY x.id DESC LIMIT 10')});
  if(['learn','question','answer','release','reread'].includes(route)){
   check(s.role==='student','יש לבחור כיתה ושם לפני הלימוד',403);let result;
   if(route==='learn')result=await acquire(d,s.student_id,b.id);
