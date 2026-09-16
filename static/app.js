@@ -15,19 +15,21 @@ async function api(path, body) {
 }
 function main(html){$('#main').innerHTML=html;}
 function nav(){
-  $('#nav').hidden=!me||me.role==='school';
+  $('#nav').hidden=!me||['school','staff_gate'].includes(me.role);
   $('#logout').hidden=!me;
   const items=[['home','הבית שלנו'],['map','מפת המסכתות'],['board','העשייה שלנו']];
   if(me?.role==='admin')items.push(['admin','ניהול']);
   $('#nav').innerHTML=items.map(([v,n])=>'<button data-view="'+v+'" '+(view===v?'aria-current="page"':'')+'>'+n+'</button>').join('');
 }
-function login(admin=false){
+function login(mode=false){
+  const admin=mode===true,staff=mode==='staff';
   view='login';nav();
-  main('<section class="panel narrow intro welcome"><span class="school-logo welcome-logo"><img src="/static/assets/school-logo.jpg" alt="סמל בית הספר חמדת השקד" width="1086" height="1536"></span><p class="eyebrow">ממ״ד חמדת השקד – מבשרת ציון</p><h1>לומדים יחד<br>משלימים יחד</h1><p>כל משנה מוסיפה אור. כל אחד ואחת שותפים.</p><form id="login-form"><label for="password">'+(admin?'סיסמת מנהל':'קוד הכניסה של בית הספר')+'</label><input id="password" type="password" autocomplete="current-password" required><input id="role" type="hidden" value="'+(admin?'admin':'school')+'"><button class="cta">כניסה '+(admin?'לניהול':'למרחב הלימוד')+'</button></form><p><button class="quiet" data-action="'+(admin?'student-login':'admin-login')+'">'+(admin?'כניסת תלמידים':'כניסת מנהל')+'</button></p><p class="dedication">לעילוי נשמת הקדושים שנרצחו על קידוש ה׳ בשמחת תורה תשפ״ד, במלחמת חרבות ברזל.</p></section>');
+  main('<section class="panel narrow intro welcome"><span class="school-logo welcome-logo"><img src="/static/assets/school-logo.jpg" alt="סמל בית הספר חמדת השקד" width="1086" height="1536"></span><p class="eyebrow">ממ״ד חמדת השקד – מבשרת ציון</p><h1>לומדים יחד<br>משלימים יחד</h1><p>כל משנה מוסיפה אור. כל אחד ואחת שותפים.</p><form id="login-form"><label for="password">'+(admin?'סיסמת מנהל':staff?'קוד הכניסה לצוות':'קוד הכניסה לתלמידים')+'</label><input id="password" type="password" autocomplete="current-password" required><input id="role" type="hidden" value="'+(admin?'admin':staff?'staff_gate':'school')+'"><button class="cta">כניסה '+(admin?'לניהול':staff?'לצוות':'למרחב הלימוד')+'</button></form><p><button class="quiet" data-action="'+(admin?'student-login':'admin-login')+'">'+(admin?'כניסת תלמידים':'כניסת מנהל')+'</button> <button class="quiet" data-action="'+(staff?'student-login':'staff-login')+'">'+(staff?'כניסת תלמידים':'כניסת צוות')+'</button></p><p class="dedication">לעילוי נשמת הקדושים שנרצחו על קידוש ה׳ בשמחת תורה תשפ״ד, במלחמת חרבות ברזל.</p></section>');
 }
 async function chooseStudent(){
   roster=await api('roster');view='select';nav();
-  main('<section class="panel narrow"><p class="eyebrow">נעים ללמוד יחד</p><h1>מי מצטרפים ללימוד?</h1><form id="select-form"><label for="class">כיתה / צוות</label><select id="class" required><option value="">בחרו כיתה או צוות</option>'+roster.classes.map(c=>'<option value="'+E(c.id)+'">'+E(c.name)+'</option>').join('')+'</select><label for="student">השם שלי</label><select id="student" required disabled><option value="">בחרו קודם כיתה או צוות</option></select><button class="cta">בואו נלמד יחד</button></form></section>');
+  if(['staff_gate','staff'].includes(me.role)){main('<section class="panel narrow"><p class="eyebrow">צוות בית הספר</p><h1>בוחרים שם ומצטרפים ללימוד</h1><p>הלימוד מצטרף להתקדמות בית הספר, ללא כרטיסי הגרלה.</p><form id="select-form"><label for="student">השם שלי</label><select id="student" required><option value="">בחרו שם</option>'+roster.students.map(s=>'<option value="'+E(s.id)+'">'+E(s.name)+'</option>').join('')+'</select><button class="cta">בואו נלמד יחד</button></form></section>');return;}
+  main('<section class="panel narrow"><p class="eyebrow">נעים ללמוד יחד</p><h1>מי מצטרפים ללימוד?</h1><form id="select-form"><label for="class">הכיתה שלי</label><select id="class" required><option value="">בחרו כיתה</option>'+roster.classes.map(c=>'<option value="'+E(c.id)+'">'+E(c.name)+'</option>').join('')+'</select><label for="student">השם שלי</label><select id="student" required disabled><option value="">בחרו קודם כיתה</option></select><button class="cta">בואו נלמד יחד</button></form></section>');
 }
 function stats(t){
  const all=t.chapters.reduce((a,b)=>a+b,0),done=state.completed.filter(id=>id.startsWith(t.id+':')).length;
@@ -56,7 +58,7 @@ async function navigate(v){
  if(v==='admin')await admin();
 }
 async function learn(mid){
- if(me.role!=='student'){await chooseStudent();return;}
+ if(!['student','staff'].includes(me.role)){await chooseStudent();return;}
  lease=await api('learn',mid?{id:mid}:{});
  lease=await api('reread',{id:lease.id});
  showStudy();
@@ -143,6 +145,7 @@ document.addEventListener('click',async event=>{
  switch(b.dataset.action){
  case 'admin-login':login(true);break;
  case 'student-login':login();break;
+ case 'staff-login':login('staff');break;
  case 'learn':await learn();break;
  case 'question':await question();break;
  case 'reread':await reread();break;
@@ -172,7 +175,7 @@ document.addEventListener('change',async event=>{
 document.addEventListener('input',event=>{if(event.target.id==='search')studentTable();if(event.target.id==='import-text')$('#apply-import').disabled=true;});
 $('#logout').addEventListener('click',async()=>{try{await api('logout',{});me=null;lease=null;login();}catch(e){notify(e.message);}});
 setInterval(async()=>{if(me&&['home','map'].includes(view)&&!document.hidden){try{const old=JSON.stringify(state);state=await api('state');if(old!==JSON.stringify(state)){view==='home'?home():map();}}catch(e){notify(e.message);}}},15000);
-(async()=>{try{me=await api('me');if(me.role==='school')await chooseStudent();else await navigate('home');}catch(e){login();}})();
+(async()=>{try{me=await api('me');if(['school','staff_gate'].includes(me.role))await chooseStudent();else await navigate('home');}catch(e){login();}})();
 
 function mainAppendBackup(){
  $('#main').insertAdjacentHTML('beforeend','<section class="panel"><h2>גיבוי ושחזור</h2><p>הגיבוי כולל את התוכן, התלמידים, הסבבים, ההשלמות והכרטיסים. שמרו אותו במקום פרטי.</p><a class="button" href="/api/admin/backup">הורדת גיבוי מלא</a><details><summary>שחזור מגיבוי</summary><p>השחזור יחליף את נתוני המשחק בנתוני הגיבוי וינתק את המשתמשים. הורידו גיבוי עדכני לפני השחזור.</p><label for="restore-file">קובץ הגיבוי</label><input id="restore-file" type="file" accept=".json"><button class="danger" data-action="restore">שחזור הנתונים</button></details></section>');

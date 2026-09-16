@@ -25,14 +25,14 @@ async function makeSession(d,req,role,sid=null){
 }
 async function auth(d,req){
  const s=await d.one('SELECT * FROM sessions WHERE token_hash=? AND expires_at>?',await hash(cookie(req)),now());check(s,'נדרשת כניסה',401);
- if(s.role==='student')check((await d.one('SELECT active FROM students WHERE id=?',s.student_id))?.active,'החשבון אינו פעיל',403);
+ if(['student','staff'].includes(s.role)){const person=await d.one('SELECT active,is_staff FROM students WHERE id=?',s.student_id);check(person?.active,'החשבון אינו פעיל',403);check(person.is_staff===(s.role==='staff'?1:0),'נדרשת כניסה מחדש באמצעות הקוד המתאים',401);}
  if(req.method==='POST')check(req.headers.get('X-CSRF-Token')===s.csrf,'רעננו את העמוד ונסו שוב',403);
  return s;
 }
 async function login(d,req,env,b){
- const role=b.role||'school';check(['school','admin'].includes(role),'סוג כניסה לא תקין');
+ const role=b.role||'school';check(['school','staff_gate','admin'].includes(role),'סוג כניסה לא תקין');
  check(typeof b.password==='string'&&b.password.length<=500,'סיסמה לא תקינה');
- const secret=role==='admin'?env.ADMIN_PASSWORD:env.SCHOOL_CODE;check(secret&&secret.length>=(role==='admin'?12:4),'הכניסה עדיין לא הוגדרה',503);
+ const secret=role==='admin'?env.ADMIN_PASSWORD:role==='staff_gate'?env.STAFF_CODE:env.SCHOOL_CODE;check(secret&&secret.length>=(role==='admin'?12:4),'הכניסה עדיין לא הוגדרה',503);
  const key=await hash((req.headers.get('CF-Connecting-IP')||'unknown')+role),time=now();
  await d.run('INSERT INTO login_limits VALUES(?,1,?) ON CONFLICT(key) DO UPDATE SET attempts=CASE WHEN until_at>? THEN attempts+1 ELSE 1 END,until_at=CASE WHEN until_at>? THEN until_at ELSE excluded.until_at END',key,time+900,time,time);
  const limit=await d.one('SELECT attempts FROM login_limits WHERE key=?',key);check(limit.attempts<=30,'בוצעו ניסיונות רבים. נסו שוב בעוד 15 דקות.',429);
@@ -178,12 +178,20 @@ async function handle(req,env){
  const getRoutes=['me','roster','state','board','admin/data','admin/export','admin/backup'];check(method===(getRoutes.includes(route)?'GET':'POST'),'פעולה לא מותרת',405);
  if(route==='me')return json({role:s.role,student_id:s.student_id,csrf:s.csrf,is_staff:s.student_id?!!(await d.one('SELECT is_staff FROM students WHERE id=?',s.student_id))?.is_staff:false});
  if(route==='logout'){await d.run('DELETE FROM sessions WHERE token_hash=?',s.token_hash);return json({ok:true},200,{'Set-Cookie':'session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0'});}
- if(route==='roster')return json({classes:await d.all('SELECT * FROM classes c WHERE EXISTS(SELECT 1 FROM students s WHERE s.class_id=c.id AND s.active=1) ORDER BY name'),students:await d.all('SELECT id,name,class_id,is_staff FROM students WHERE active=1 ORDER BY name')});
- if(route==='select'){check(['school','student'].includes(s.role),'כניסה זו מיועדת לתלמידים',403);check(await d.one('SELECT 1 FROM students WHERE id=? AND active=1',b.student_id),'התלמיד לא נמצא');return makeSession(d,req,'student',b.student_id);}
+ if(route==='roster'){
+  const staff=['staff_gate','staff'].includes(s.role)?1:0,admin=s.role==='admin';
+  return json({classes:await d.all('SELECT * FROM classes c WHERE EXISTS(SELECT 1 FROM students s WHERE s.class_id=c.id AND s.active=1 AND (? OR s.is_staff=?)) ORDER BY name',admin?1:0,staff),students:await d.all('SELECT id,name,class_id,is_staff FROM students WHERE active=1 AND (? OR is_staff=?) ORDER BY name',admin?1:0,staff)});
+ }
+ if(route==='select'){
+  check(['school','student','staff_gate','staff'].includes(s.role),'כניסה זו אינה מיועדת לבחירת משתתף',403);
+  const staff=['staff_gate','staff'].includes(s.role)?1:0;
+  check(await d.one('SELECT 1 FROM students WHERE id=? AND active=1 AND is_staff=?',b.student_id,staff),'השם אינו זמין בסוג הכניסה הזה',403);
+  return makeSession(d,req,staff?'staff':'student',b.student_id);
+ }
  if(route==='state'){const round=await current(d)||await d.one('SELECT * FROM rounds ORDER BY number DESC LIMIT 1');return json({structure,total:149,round,completed:(await d.all('SELECT mishnah_id FROM completions WHERE round_id=? AND revoked_at IS NULL',round.id)).map(r=>r.mishnah_id),statuses:Object.fromEntries((await d.all('SELECT mishnah_id,status FROM content')).map(r=>[r.mishnah_id,r.status])),my_tickets:(await d.one('SELECT COALESCE(SUM(delta),0) n FROM tickets WHERE student_id=?',s.student_id)).n});}
  if(route==='board')return json({students:await d.all(studentQuery+' WHERE s.active=1 AND s.is_staff=0 GROUP BY s.id ORDER BY c.name,s.name'),classes:await d.all(classQuery),recent:await d.all('SELECT c.name AS class_name,m.tractate,x.completed_at FROM completions x JOIN classes c ON c.id=x.class_id JOIN mishnayot m ON m.id=x.mishnah_id WHERE x.revoked_at IS NULL ORDER BY x.id DESC LIMIT 10')});
  if(['learn','question','answer','release','reread'].includes(route)){
-  check(s.role==='student','יש לבחור כיתה ושם לפני הלימוד',403);let result;
+  check(['student','staff'].includes(s.role),'יש לבחור שם לפני הלימוד',403);let result;
   if(route==='learn')result=await acquire(d,s.student_id,b.id);
   if(route==='reread')result=await reread(d,b.id,s.student_id);
   if(route==='question')result=await challenge(d,b.id,s.student_id);
