@@ -15,6 +15,13 @@
       "when": 1789482677021,
       "tag": "0001_atomic_game_rules",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1789529594612,
+      "tag": "0002_learning_retry_without_cooldown",
+      "breakpoints": true
     }
   ]
 }

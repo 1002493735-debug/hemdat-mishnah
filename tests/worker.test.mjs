@@ -9,10 +9,46 @@ after(async()=>{await mf?.dispose();});
 function client(){return {cookie:'',csrf:'',async api(path,body){const response=await mf.dispatchFetch('https://game.test/api/'+path,{method:body===undefined?'GET':'POST',headers:{Cookie:this.cookie,'X-CSRF-Token':this.csrf,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});if(response.headers.get('set-cookie'))this.cookie=response.headers.get('set-cookie').split(';')[0];const text=await response.text();let data;try{data=JSON.parse(text);}catch{data=text;}if(data.csrf)this.csrf=data.csrf;return {status:response.status,data};}};}
 async function login(sid){const c=client();assert.equal((await c.api('login',{password:'test-only-code'})).status,200);assert.equal((await c.api('select',{student_id:sid})).status,200);return c;}
 async function correct(c,mid){const l=await c.api('learn',mid?{id:mid}:{});assert.equal(l.status,200);const q=await c.api('question',{id:l.data.id});assert.equal(q.status,200);const stored=await db.prepare('SELECT challenge FROM leases WHERE id=?').bind(l.data.id).first();const option=JSON.parse(stored.challenge).correct_id;return {l:l.data,q:q.data,option};}
-test('149 ready records; 298 questions; stable canonical identifiers',async()=>{const c=await login('demo-1');const s=(await c.api('state')).data;assert.equal(s.total,149);assert.equal(Object.values(s.statuses).filter(v=>v==='ready').length,149);assert.deepEqual(validateContent(JSON.parse(await fs.readFile('data/content.json','utf8')),true).errors,[]);});
+test('149 ready records; 298 questions; stable canonical identifiers',async()=>{const c=await login('demo-1');const s=(await c.api('state')).data;assert.equal(s.total,149);assert.deepEqual(s.structure.map(t=>t.id),['sukkah','yoma','rosh-hashanah']);assert.equal(Object.values(s.statuses).filter(v=>v==='ready').length,149);assert.deepEqual(validateContent(JSON.parse(await fs.readFile('data/content.json','utf8')),true).errors,[]);});
 test('authentication, CSRF and answer secrecy',async()=>{const anon=client();assert.equal((await anon.api('roster')).status,401);const c=await login('demo-1');assert.equal((await c.api('admin/data')).status,403);const csrf=c.csrf;c.csrf='bad';assert.equal((await c.api('learn',{})).status,403);c.csrf=csrf;const x=await correct(c,'sukkah:1:1');assert.equal(x.q.options.length,4);assert.ok(!('correct_id' in x.q));assert.ok(!('questions' in x.l));await c.api('release',{id:x.l.id});});
 test('simultaneous devices receive one lock; retry awards exactly one ticket',async()=>{const a=await login('demo-1'),b=await login('demo-2');const results=await Promise.all([a.api('learn',{id:'sukkah:1:2'}),b.api('learn',{id:'sukkah:1:2'})]);assert.deepEqual(results.map(r=>r.status).sort(),[200,409]);const winner=results[0].status===200?a:b;const l=results.find(r=>r.status===200).data;await winner.api('question',{id:l.id});const option=JSON.parse((await db.prepare('SELECT challenge FROM leases WHERE id=?').bind(l.id).first()).challenge).correct_id;const answers=await Promise.all(Array.from({length:8},()=>winner.api('answer',{id:l.id,option})));assert.ok(answers.every(r=>r.status===200&&r.data.result==='correct'));assert.equal((await db.prepare("SELECT count(*) n FROM completions WHERE mishnah_id='sukkah:1:2'").first()).n,1);assert.equal((await db.prepare("SELECT count(*) n FROM tickets WHERE completion_id IS NOT NULL").first()).n,1);});
-test('wrong answer persists cooldown across login and releases to another student',async()=>{const a=await login('demo-3'),x=await correct(a,'yoma:1:1');const wrong=x.q.options.find(o=>o.id!==x.option).id;const r=await a.api('answer',{id:x.l.id,option:wrong});assert.equal(r.data.result,'wrong');assert.ok(r.data.until>Date.now()/1000+290);const again=await login('demo-3');assert.equal((await again.api('learn',{id:'yoma:1:1'})).status,409);const b=await login('demo-4');const y=await correct(b,'yoma:1:1');assert.equal((await b.api('answer',{id:y.l.id,option:y.option})).data.result,'correct');});
+test('wrong feedback, reread and alternate question survive login with no cooldown',async()=>{
+ const a=await login('demo-3'),x=await correct(a,'yoma:1:1');
+ const first=JSON.parse((await db.prepare('SELECT challenge FROM leases WHERE id=?').bind(x.l.id).first()).challenge);
+ const wrong=x.q.options.find(o=>o.id!==x.option),r=await a.api('answer',{id:x.l.id,option:wrong.id});
+ assert.equal(r.data.result,'wrong');assert.equal(r.data.selected.text,wrong.text);assert.equal(r.data.correct.id,x.option);assert.ok(!('until' in r.data));
+ assert.equal((await db.prepare('SELECT count(*) n FROM cooldowns').first()).n,0);
+ assert.equal((await a.api('answer',{id:x.l.id,option:x.option})).data.result,'wrong');
+ assert.equal((await a.api('question',{id:x.l.id})).status,409);
+ const again=await login('demo-3');assert.equal((await again.api('learn',{id:'yoma:1:1'})).data.id,x.l.id);
+ const other=await login('demo-4');assert.equal((await other.api('learn',{id:'yoma:1:1'})).status,409);
+ assert.equal((await again.api('reread',{id:x.l.id})).data.text,x.l.text);
+ const q2=await again.api('question',{id:x.l.id});assert.equal(q2.status,200);assert.notEqual(q2.data.prompt,x.q.prompt);
+ const second=JSON.parse((await db.prepare('SELECT challenge FROM leases WHERE id=?').bind(x.l.id).first()).challenge);
+ assert.equal(second.index,1-first.index);assert.ok(!('correct_id' in q2.data));
+ assert.equal((await again.api('answer',{id:x.l.id,option:x.option})).status,400);
+ await again.api('reread',{id:x.l.id});assert.deepEqual((await again.api('question',{id:x.l.id})).data,q2.data);
+ assert.equal((await again.api('answer',{id:x.l.id,option:second.correct_id})).data.result,'correct');
+ assert.equal((await db.prepare("SELECT count(*) n FROM completions WHERE mishnah_id='yoma:1:1'").first()).n,1);
+});
+test('repeated wrong attempts alternate, legacy cooldowns ignored, parallel answers first wins',async()=>{
+ const c=await login('demo-3');await db.prepare("INSERT INTO cooldowns VALUES('demo-3','sukkah:3:1',?)").bind(Math.floor(Date.now()/1000)+3600).run();
+ const x=await correct(c,'sukkah:3:1');let q=x.q;
+ for(let i=0;i<3;i++){
+  const before=JSON.parse((await db.prepare('SELECT challenge FROM leases WHERE id=?').bind(x.l.id).first()).challenge);
+  const wrong=q.options.find(o=>o.id!==before.correct_id).id;
+  const rs=await Promise.all(Array.from({length:5},()=>c.api('answer',{id:x.l.id,option:wrong})));
+  assert.ok(rs.every(r=>r.data.result==='wrong'));assert.ok(rs.every(r=>r.data.correct.id===before.correct_id));
+  const retry=await c.api('answer',{id:x.l.id,option:before.correct_id});assert.equal(retry.data.result,'wrong');
+  await c.api('reread',{id:x.l.id});q=(await c.api('question',{id:x.l.id})).data;
+  assert.notEqual(q.prompt,before.prompt);
+ }
+ const end=JSON.parse((await db.prepare('SELECT challenge FROM leases WHERE id=?').bind(x.l.id).first()).challenge);
+ const rs=await Promise.all([c.api('answer',{id:x.l.id,option:end.correct_id}),c.api('answer',{id:x.l.id,option:q.options.find(o=>o.id!==end.correct_id).id})]);
+ assert.equal(rs[0].data.result,rs[1].data.result);
+ const count=(await db.prepare("SELECT count(*) n FROM completions WHERE mishnah_id='sukkah:3:1'").first()).n;
+ assert.equal(count,rs[0].data.result==='correct'?1:0);await c.api('release',{id:x.l.id});
+});
 test('expired lock can be taken; late answer gets friendly taken response',async()=>{const a=await login('demo-1'),x=await correct(a,'yoma:1:2');await db.prepare('UPDATE leases SET expires_at=1 WHERE id=?').bind(x.l.id).run();const b=await login('demo-2'),y=await correct(b,'yoma:1:2');assert.equal((await b.api('answer',{id:y.l.id,option:y.option})).data.result,'correct');assert.equal((await a.api('answer',{id:x.l.id,option:x.option})).data.result,'taken');});
 test('imports validate errors and preserve game history; admin revocation atomic',async()=>{const a=client();await a.api('login',{role:'admin',password:'test-only-password'});const rows=JSON.parse(await fs.readFile('data/content.json','utf8'));const before=(await a.api('admin/data')).data;assert.ok(validateContent([rows[0],rows[0]]).errors.length);assert.ok(validateContent([{...rows[0],id:'bad'}]).errors.length);const bad=structuredClone(rows[0]);bad.questions[0].options.pop();assert.ok(validateContent([bad]).errors.length);bad.questions[0].options.push('not correct');bad.questions[0].correct='absent';assert.ok(validateContent([bad]).errors.length);const report=await a.api('admin/import',{kind:'content',rows,full:true,apply:true});assert.equal(report.data.applied,true);const after=(await a.api('admin/data')).data;assert.deepEqual(after.completions,before.completions);assert.deepEqual(after.tickets,before.tickets);const id=before.completions[0].id;const rs=await Promise.all([a.api('admin/revoke',{id}),a.api('admin/revoke',{id})]);assert.deepEqual(rs.map(r=>r.status).sort(),[200,400]);assert.equal((await db.prepare('SELECT COUNT(*) n FROM tickets WHERE reason=?').bind('ביטול השלמה '+id).first()).n,1);assert.equal((await a.api('admin/export?kind=raffle')).status,200);});
 test('question positions vary across attempts',async()=>{const c=await login('demo-3'),positions=new Set();for(let i=0;i<16;i++){const x=await correct(c,'sukkah:2:1');positions.add(x.q.options.findIndex(o=>o.id===x.option));await c.api('release',{id:x.l.id});}assert.ok(positions.size>1);});

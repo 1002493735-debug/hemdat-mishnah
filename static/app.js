@@ -23,7 +23,7 @@ function nav(){
 }
 function login(admin=false){
   view='login';nav();
-  main('<section class="panel narrow intro welcome"><img class="welcome-mark" src="/static/favicon.svg" alt="" width="72" height="72"><p class="eyebrow">ממ״ד חמדת השקד – מבשרת ציון</p><h1>לומדים יחד<br>משלימים יחד</h1><p>כל משנה מוסיפה אור. כל אחד ואחת שותפים.</p><form id="login-form"><label for="password">'+(admin?'סיסמת מנהל':'קוד הכניסה של בית הספר')+'</label><input id="password" type="password" autocomplete="current-password" required><input id="role" type="hidden" value="'+(admin?'admin':'school')+'"><button class="cta">כניסה '+(admin?'לניהול':'למרחב הלימוד')+'</button></form><p><button class="quiet" data-action="'+(admin?'student-login':'admin-login')+'">'+(admin?'כניסת תלמידים':'כניסת מנהל')+'</button></p><p class="dedication">לעילוי נשמת הקדושים שנרצחו על קידוש ה׳ בשמחת תורה תשפ״ד, במלחמת חרבות ברזל.</p></section>');
+  main('<section class="panel narrow intro welcome"><span class="school-logo welcome-logo"><img src="/static/assets/school-logo.jpg" alt="סמל בית הספר חמדת השקד" width="1086" height="1536"></span><p class="eyebrow">ממ״ד חמדת השקד – מבשרת ציון</p><h1>לומדים יחד<br>משלימים יחד</h1><p>כל משנה מוסיפה אור. כל אחד ואחת שותפים.</p><form id="login-form"><label for="password">'+(admin?'סיסמת מנהל':'קוד הכניסה של בית הספר')+'</label><input id="password" type="password" autocomplete="current-password" required><input id="role" type="hidden" value="'+(admin?'admin':'school')+'"><button class="cta">כניסה '+(admin?'לניהול':'למרחב הלימוד')+'</button></form><p><button class="quiet" data-action="'+(admin?'student-login':'admin-login')+'">'+(admin?'כניסת תלמידים':'כניסת מנהל')+'</button></p><p class="dedication">לעילוי נשמת הקדושים שנרצחו על קידוש ה׳ בשמחת תורה תשפ״ד, במלחמת חרבות ברזל.</p></section>');
 }
 async function chooseStudent(){
   roster=await api('roster');view='select';nav();
@@ -42,7 +42,7 @@ function home(){
 function map(){
  main('<h1>מפת המסכתות</h1><p class="muted">כל משנה היא חלק מהלימוד המשותף שלנו.</p>'+state.structure.map(t=>{
  const p=stats(t);
- return '<section class="panel"><h2>מסכת '+E(t.name)+'</h2><p>'+p.done+' נלמדו · '+(p.all-p.done)+' נותרו · '+p.all+' בסך הכול · '+p.pct+'%</p>'+progress(p.done,p.all)+(p.done===p.all?'<p class="stat">✓ המסכת הושלמה!</p>':'')+t.chapters.map((count,c)=>'<details open><summary>פרק '+letters[c+1]+' · '+count+' משניות</summary><div class="tiles">'+Array.from({length:count},(_,m)=>{
+ return '<section class="panel">'+art(t.id)+'<h2>מסכת '+E(t.name)+'</h2><p>'+p.done+' נלמדו · '+(p.all-p.done)+' נותרו · '+p.all+' בסך הכול · '+p.pct+'%</p>'+progress(p.done,p.all)+(p.done===p.all?'<p class="stat">✓ המסכת הושלמה!</p>':'')+t.chapters.map((count,c)=>'<details open><summary>פרק '+letters[c+1]+' · '+count+' משניות</summary><div class="tiles">'+Array.from({length:count},(_,m)=>{
  const id=t.id+':'+(c+1)+':'+(m+1),done=state.completed.includes(id),ready=state.statuses[id]==='ready';
  if(done)return '<span class="tile done" aria-label="'+E(title(id))+' הושלמה">✓</span>';
  return '<button class="tile '+(ready?'':'soon')+'" '+(ready?'data-learn="'+id+'"':'disabled')+' aria-label="'+E(title(id))+(ready?' ללימוד':' בקרוב')+'">'+letters[m+1]+(ready?'':'<small>בקרוב</small>')+'</button>';
@@ -58,15 +58,23 @@ async function navigate(v){
 async function learn(mid){
  if(me.role!=='student'){await chooseStudent();return;}
  lease=await api('learn',mid?{id:mid}:{});
+ lease=await api('reread',{id:lease.id});
+ showStudy();
+}
+function showStudy(){
  view='study';nav();notify();
  main('<section class="panel study">'+art(lease.mishnah_id.split(':')[0])+'<p class="eyebrow">עוד משנה. עוד אור.</p><h1>'+E(title(lease.mishnah_id))+'</h1><div class="mishnah">'+E(lease.text)+'</div><button class="cta" data-action="question">למדתי – אפשר לשאול אותי!</button><p><button class="quiet" data-action="release">חזרה ושחרור המשנה</button></p></section>');
 }
+async function reread(){lease=await api('reread',{id:lease.id});showStudy();}
 async function question(){
  const q=await api('question',{id:lease.id});view='question';
- main('<section class="panel study"><p class="eyebrow">'+E(title(lease.mishnah_id))+'</p><h1>'+E(q.prompt)+'</h1>'+(q.hint?'<details class="hint"><summary>רמז קטן שיעזור לי</summary><p>'+E(q.hint)+'</p></details>':'')+'<div class="options">'+q.options.map(o=>'<button data-answer="'+o.id+'">'+E(o.text)+'</button>').join('')+'</div></section>');
+ main('<section class="panel study">'+art(lease.mishnah_id.split(':')[0])+'<p class="eyebrow">'+E(title(lease.mishnah_id))+'</p><h1>'+E(q.prompt)+'</h1>'+(q.hint?'<details class="hint"><summary>רמז קטן שיעזור לי</summary><p>'+E(q.hint)+'</p></details>':'')+'<div class="options">'+q.options.map(o=>'<button data-answer="'+o.id+'">'+E(o.text)+'</button>').join('')+'</div><p><button class="quiet" data-action="reread">📖 חזרה לקריאת המשנה</button></p></section>');
 }
 async function submitAnswer(option){
- const r=await api('answer',{id:lease.id,option});lease=null;view='result';
+ const illustration=art(lease.mishnah_id.split(':')[0]);
+ document.querySelectorAll('[data-answer]').forEach(b=>b.disabled=true);
+ let r;try{r=await api('answer',{id:lease.id,option});}catch(e){document.querySelectorAll('[data-answer]').forEach(b=>b.disabled=false);throw e;}
+ view='result';
  let html;
  if(r.result==='correct'){
  html='<div class="seal">✓</div><h1>כל הכבוד! 🎉</h1><p>בזכותך הושלמה משנה נוספת!</p><p class="stat">✓ המשנה נלמדה</p><div class="ticket">זכית בכרטיס הגרלה! 🎟️</div>';
@@ -74,9 +82,11 @@ async function submitAnswer(option){
  if(r.all_completed)html+='<h2>יחד השלמנו שלוש מסכתות!</h2><p>ממ״ד חמדת השקד השלים את מסכתות ראש השנה, יומא וסוכה לעילוי נשמת הקדושים.</p>';
  if(r.bonus_round)html+='<h2>🌟 סיבוב הבונוס נפתח! 🌟</h2>';
  }else if(r.result==='wrong'){
- html='<h1>ממשיכים ללמוד באהבה</h1><p>כדאי ללמוד שוב את המשנה ולנסות מחדש.</p>'+(r.until?'<p>אפשר לנסות משנה זו שוב אחרי '+new Date(r.until*1000).toLocaleTimeString('he-IL',{hour:'2-digit',minute:'2-digit'})+', אם עדיין תהיה פנויה.</p>':'')+'<p>בינתיים אפשר ללמוד משנה אחרת.</p>';
+ main('<section class="panel study">'+illustration+'<h1>ממשיכים ללמוד יחד</h1><p>נחזור לקרוא את המשנה, ואז ננסה את השאלה השנייה.</p><div class="answer-feedback" role="status"><div class="answer-wrong"><strong>✗ התשובה שבחרת</strong><p>'+E(r.selected.text)+'</p></div><div class="answer-correct"><strong>✓ התשובה הנכונה</strong><p><strong>'+E(r.correct.text)+'</strong></p></div></div><button class="cta" data-action="reread">📖 חזרה למשנה ולניסיון נוסף</button></section>');
+ return;
  }else html='<h1>הלימוד של כולנו מצטרף יחד</h1><p>מישהו בדיוק הקדים אותך והשלים את המשנה! כל הכבוד על הלימוד – בואו נמצא לך משנה נוספת.</p>';
- main('<section class="panel narrow success">'+html+'<button class="cta" data-action="learn">📖 למשנה נוספת</button><p><button class="quiet" data-view="home">לבית שלנו</button></p></section>');
+ lease=null;
+ main('<section class="panel narrow success">'+illustration+html+'<button class="cta" data-action="learn">📖 למשנה נוספת</button><p><button class="quiet" data-view="home">לבית שלנו</button></p></section>');
 }
 function table(headers,rows){
  return '<div class="table-wrap"><table><thead><tr>'+headers.map(h=>'<th scope="col">'+E(h)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+r.map(c=>'<td>'+c+'</td>').join('')+'</tr>').join('')+'</tbody></table></div>';
@@ -88,7 +98,7 @@ async function board(){
 async function admin(){
  adminData=await api('admin/data');
  const d=adminData,settings=Object.fromEntries(d.settings.map(s=>[s.key,s.value]));
- main('<h1>ניהול המיזם</h1><div class="row"><button data-view="home">התקדמות כללית</button><button data-view="map">מפת המשניות</button><button data-view="board">כרטיסים ותרומת כיתות</button></div><section class="panel"><h2>תלמידים וכרטיסים</h2><div class="filters"><input id="search" aria-label="חיפוש תלמיד" placeholder="חיפוש תלמיד"><select id="class-filter" aria-label="סינון כיתה"><option value="">כל הכיתות</option>'+d.classes.map(c=>'<option value="'+E(c.id)+'">'+E(c.name)+'</option>').join('')+'</select></div><div id="student-table"></div><h3>תיקון כרטיס</h3><form id="ticket-form"><label for="ticket-student">תלמיד/ה</label><select id="ticket-student">'+d.students.map(s=>'<option value="'+E(s.id)+'">'+E(s.name)+'</option>').join('')+'</select><label for="delta">פעולה</label><select id="delta"><option value="1">הוספת כרטיס אחד</option><option value="-1">הסרת כרטיס אחד</option></select><label for="reason">סיבת התיקון</label><input id="reason" required maxlength="300"><button class="cta">שמירת תיקון</button></form></section><section class="panel"><h2>זמני המתנה ונעילה</h2><form id="settings-form"><label for="cooldown">השהיה אחרי טעות, בשניות</label><input id="cooldown" type="number" min="1" max="86400" value="'+settings.cooldown_seconds+'" required><label for="lease-seconds">נעילת לימוד, בשניות</label><input id="lease-seconds" type="number" min="60" max="3600" value="'+settings.lease_seconds+'" required><button class="cta">שמירת זמנים</button></form></section><section class="panel"><h2>ייבוא ועדכון תוכן ותלמידים</h2><p>תחילה בודקים את הקובץ. לאחר בדיקה מוצלחת ניתן לשמור. ייבוא תוכן אינו משנה השלמות או כרטיסים.</p><label for="import-kind">סוג קובץ</label><select id="import-kind"><option value="content">תוכן משניות ושאלות – Excel או JSON</option><option value="students">תלמידים וכיתות – Excel, CSV או JSON</option></select><label for="import-file">בחירת קובץ</label><input id="import-file" type="file" accept=".json,.csv,.xlsx"><label><input id="full" type="checkbox"> בדיקת מאגר תוכן מלא (149 משניות)</label><label for="import-text">תוכן הקובץ / עריכה ידנית</label><textarea id="import-text" dir="ltr" spellcheck="false"></textarea><div class="row"><button data-action="validate">בדיקת קובץ</button><button id="apply-import" data-action="import" disabled>שמירת הייבוא</button><a class="button quiet" href="/api/admin/export?kind=content">הורדת תבנית התוכן המלאה</a></div><pre id="import-report" role="status"></pre></section><section class="panel"><h2>משניות שהושלמו</h2>'+table(['משנה','תלמיד/ה','כיתה','סבב','מועד','מצב'],d.completions.map(x=>[E(title(x.mishnah_id)),E(d.students.find(s=>s.id===x.student_id)?.name||x.student_id),E(d.classes.find(c=>c.id===x.class_id)?.name||x.class_id),x.round_id,E(new Date(x.completed_at*1000).toLocaleString('he-IL')),x.revoked_at?'בוטלה':'<button class="danger" data-revoke="'+x.id+'">ביטול השלמה וכרטיס</button>']))+'</section><section class="panel"><h2>סבבים</h2>'+table(['סבב','התחלה','סיום'],d.rounds.map(r=>[r.number,E(new Date(r.started_at*1000).toLocaleString('he-IL')),r.finished_at?E(new Date(r.finished_at*1000).toLocaleString('he-IL')):'פעיל']))+'<p>הסבב השני נפתח אוטומטית. סבבים נוספים נפתחים כאן לאחר סיום הסבב הפעיל.</p><button data-action="new-round">פתיחת סבב נוסף</button></section><section class="panel"><h2>ייצוא</h2><div class="row">'+[['tickets','כרטיסים'],['raffle','רשימה מוכנה להגרלה'],['completions','השלמות והיסטוריה'],['classes','תרומת כיתות'],['students','תלמידים וכיתות']].map(([k,n])=>'<a class="button" href="/api/admin/export?kind='+k+'">'+n+' – CSV</a>').join('')+'</div></section><section class="panel"><details><summary>יומן שינויים אחרונים</summary>'+table(['זמן','פעולה','פרטים'],d.audit.map(a=>[E(new Date(a.at*1000).toLocaleString('he-IL')),E(a.action),E(a.details)]))+'</details></section>');
+ main('<h1>ניהול המיזם</h1><div class="row"><button data-view="home">התקדמות כללית</button><button data-view="map">מפת המשניות</button><button data-view="board">כרטיסים ותרומת כיתות</button></div><section class="panel"><h2>תלמידים וכרטיסים</h2><div class="filters"><input id="search" aria-label="חיפוש תלמיד" placeholder="חיפוש תלמיד"><select id="class-filter" aria-label="סינון כיתה"><option value="">כל הכיתות</option>'+d.classes.map(c=>'<option value="'+E(c.id)+'">'+E(c.name)+'</option>').join('')+'</select></div><div id="student-table"></div><h3>תיקון כרטיס</h3><form id="ticket-form"><label for="ticket-student">תלמיד/ה</label><select id="ticket-student">'+d.students.map(s=>'<option value="'+E(s.id)+'">'+E(s.name)+'</option>').join('')+'</select><label for="delta">פעולה</label><select id="delta"><option value="1">הוספת כרטיס אחד</option><option value="-1">הסרת כרטיס אחד</option></select><label for="reason">סיבת התיקון</label><input id="reason" required maxlength="300"><button class="cta">שמירת תיקון</button></form></section><section class="panel"><h2>זמן נעילת משנה</h2><p>אחרי טעות חוזרים לקריאה ולשאלה השנייה, ללא השהיה.</p><form id="settings-form"><label for="lease-seconds">נעילת לימוד, בשניות</label><input id="lease-seconds" type="number" min="60" max="3600" value="'+settings.lease_seconds+'" required><button class="cta">שמירת זמנים</button></form></section><section class="panel"><h2>ייבוא ועדכון תוכן ותלמידים</h2><p>תחילה בודקים את הקובץ. לאחר בדיקה מוצלחת ניתן לשמור. ייבוא תוכן אינו משנה השלמות או כרטיסים.</p><label for="import-kind">סוג קובץ</label><select id="import-kind"><option value="content">תוכן משניות ושאלות – Excel או JSON</option><option value="students">תלמידים וכיתות – Excel, CSV או JSON</option></select><label for="import-file">בחירת קובץ</label><input id="import-file" type="file" accept=".json,.csv,.xlsx"><label><input id="full" type="checkbox"> בדיקת מאגר תוכן מלא (149 משניות)</label><label for="import-text">תוכן הקובץ / עריכה ידנית</label><textarea id="import-text" dir="ltr" spellcheck="false"></textarea><div class="row"><button data-action="validate">בדיקת קובץ</button><button id="apply-import" data-action="import" disabled>שמירת הייבוא</button><a class="button quiet" href="/api/admin/export?kind=content">הורדת תבנית התוכן המלאה</a></div><pre id="import-report" role="status"></pre></section><section class="panel"><h2>משניות שהושלמו</h2>'+table(['משנה','תלמיד/ה','כיתה','סבב','מועד','מצב'],d.completions.map(x=>[E(title(x.mishnah_id)),E(d.students.find(s=>s.id===x.student_id)?.name||x.student_id),E(d.classes.find(c=>c.id===x.class_id)?.name||x.class_id),x.round_id,E(new Date(x.completed_at*1000).toLocaleString('he-IL')),x.revoked_at?'בוטלה':'<button class="danger" data-revoke="'+x.id+'">ביטול השלמה וכרטיס</button>']))+'</section><section class="panel"><h2>סבבים</h2>'+table(['סבב','התחלה','סיום'],d.rounds.map(r=>[r.number,E(new Date(r.started_at*1000).toLocaleString('he-IL')),r.finished_at?E(new Date(r.finished_at*1000).toLocaleString('he-IL')):'פעיל']))+'<p>הסבב השני נפתח אוטומטית. סבבים נוספים נפתחים כאן לאחר סיום הסבב הפעיל.</p><button data-action="new-round">פתיחת סבב נוסף</button></section><section class="panel"><h2>ייצוא</h2><div class="row">'+[['tickets','כרטיסים'],['raffle','רשימה מוכנה להגרלה'],['completions','השלמות והיסטוריה'],['classes','תרומת כיתות'],['students','תלמידים וכיתות']].map(([k,n])=>'<a class="button" href="/api/admin/export?kind='+k+'">'+n+' – CSV</a>').join('')+'</div></section><section class="panel"><details><summary>יומן שינויים אחרונים</summary>'+table(['זמן','פעולה','פרטים'],d.audit.map(a=>[E(new Date(a.at*1000).toLocaleString('he-IL')),E(a.action),E(a.details)]))+'</details></section>');
  mainAppendBackup();
  studentTable();
 }
@@ -118,7 +128,7 @@ document.addEventListener('submit',async event=>{
  if(form.id==='login-form'){me=await api('login',{role:$('#role').value,password:$('#password').value});if(me.role==='admin')await navigate('admin');else await chooseStudent();}
  if(form.id==='select-form'){me=await api('select',{student_id:$('#student').value});await navigate('home');}
  if(form.id==='ticket-form'){await api('admin/ticket',{student_id:$('#ticket-student').value,delta:+$('#delta').value,reason:$('#reason').value});await admin();notify('תיקון הכרטיס נשמר.');}
- if(form.id==='settings-form'){await api('admin/settings',{cooldown_seconds:+$('#cooldown').value,lease_seconds:+$('#lease-seconds').value});notify('הזמנים נשמרו.');}
+ if(form.id==='settings-form'){await api('admin/settings',{lease_seconds:+$('#lease-seconds').value});notify('הזמנים נשמרו.');}
  }catch(e){notify(e.message);}finally{if(button)button.disabled=false;}
 });
 document.addEventListener('click',async event=>{
@@ -135,6 +145,7 @@ document.addEventListener('click',async event=>{
  case 'student-login':login();break;
  case 'learn':await learn();break;
  case 'question':await question();break;
+ case 'reread':await reread();break;
  case 'release':await api('release',{id:lease.id});lease=null;await navigate('home');break;
  case 'validate':await doImport(false);break;
  case 'import':await doImport(true);break;

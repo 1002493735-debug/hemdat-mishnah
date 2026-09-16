@@ -49,35 +49,53 @@ async function acquire(d,sid,mid){
  FROM content c CROSS JOIN rounds r WHERE c.status='ready' AND r.finished_at IS NULL AND (? IS NULL OR c.mishnah_id=?)
  AND NOT EXISTS(SELECT 1 FROM completions x WHERE x.round_id=r.id AND x.mishnah_id=c.mishnah_id AND x.revoked_at IS NULL)
  AND NOT EXISTS(SELECT 1 FROM leases l WHERE l.round_id=r.id AND l.mishnah_id=c.mishnah_id AND l.result IS NULL)
- AND NOT EXISTS(SELECT 1 FROM cooldowns k WHERE k.student_id=? AND k.mishnah_id=c.mishnah_id AND k.until_at>?)
- AND EXISTS(SELECT 1 FROM students WHERE id=? AND active=1) ORDER BY random() LIMIT 1`,lid,sid,t,mid||null,mid||null,sid,t,sid)]);
+ AND EXISTS(SELECT 1 FROM students WHERE id=? AND active=1) ORDER BY random() LIMIT 1`,lid,sid,t,mid||null,mid||null,sid)]);
  const l=await d.one('SELECT * FROM leases WHERE student_id=? AND result IS NULL',sid);
  check(l,'אין כרגע משנה מוכנה ופנויה עבורך. אפשר לנסות שוב בהמשך.',409);return {id:l.id,mishnah_id:l.mishnah_id,text:l.text,expires_at:l.expires_at};
 }
 async function owned(d,lid,sid){const l=await d.one('SELECT * FROM leases WHERE id=? AND student_id=?',lid||'',sid);check(l,'הלימוד לא נמצא',404);return l;}
 const random=n=>{const a=new Uint32Array(1),max=Math.floor(4294967296/n)*n;do{crypto.getRandomValues(a);}while(a[0]>=max);return a[0]%n;};
+const studyLease=l=>({id:l.id,mishnah_id:l.mishnah_id,text:l.text,expires_at:l.expires_at});
+const feedback=q=>({result:'wrong',selected:q.options.find(o=>o.id===q.selected_id),correct:q.options.find(o=>o.id===q.correct_id)});
+async function reread(d,lid,sid){
+ const l=await owned(d,lid,sid);check(!l.result&&l.expires_at>now(),'זמן הלימוד הסתיים. בחרו משנה מחדש.',409);
+ const q=l.challenge?JSON.parse(l.challenge):null;
+ if(q?.answered){
+  const qs=JSON.parse(l.questions),index=Number.isInteger(q.index)?q.index:qs.findIndex(x=>x.prompt===q.prompt);
+  await d.run('UPDATE leases SET challenge=? WHERE id=? AND challenge=? AND result IS NULL AND expires_at>?',JSON.stringify({reading:true,next_index:(Math.max(index,0)+1)%qs.length}),lid,l.challenge,now());
+ }
+ return studyLease(l);
+}
 async function challenge(d,lid,sid){
  const l=await owned(d,lid,sid);check(!l.result&&l.expires_at>now(),'זמן הלימוד הסתיים. בחרו משנה מחדש.',409);
- if(!l.challenge){const qs=JSON.parse(l.questions),q=qs[random(qs.length)],opts=[...q.options];for(let i=opts.length-1;i>0;i--){const j=random(i+1);[opts[i],opts[j]]=[opts[j],opts[i]];}
- const result={prompt:q.prompt,hint:q.hint||'',options:opts.map(text=>({id:token(),text}))};result.correct_id=result.options.find(o=>o.text===q.correct).id;
- await d.run('UPDATE leases SET challenge=? WHERE id=? AND challenge IS NULL AND result IS NULL AND expires_at>?',JSON.stringify(result),lid,now());}
+ const previous=l.challenge?JSON.parse(l.challenge):null;
+ check(!previous?.answered,'חזרו לקריאת המשנה לפני השאלה הבאה.',409);
+ if(!previous||previous.reading){const qs=JSON.parse(l.questions),index=previous?.next_index??random(qs.length),q=qs[index],opts=[...q.options];for(let i=opts.length-1;i>0;i--){const j=random(i+1);[opts[i],opts[j]]=[opts[j],opts[i]];}
+ const result={index,prompt:q.prompt,hint:q.hint||'',options:opts.map(text=>({id:token(),text}))};result.correct_id=result.options.find(o=>o.text===q.correct).id;
+ await d.run('UPDATE leases SET challenge=? WHERE id=? AND challenge IS ? AND result IS NULL AND expires_at>?',JSON.stringify(result),lid,l.challenge,now());}
  const saved=await owned(d,lid,sid);check(!saved.result&&saved.expires_at>now()&&saved.challenge,'זמן הלימוד הסתיים',409);
- const {correct_id,...publicQuestion}=JSON.parse(saved.challenge);return publicQuestion;
+ const q=JSON.parse(saved.challenge);check(!q.answered&&!q.reading,'חזרו לקריאת המשנה לפני השאלה הבאה.',409);
+ const {correct_id,index,...publicQuestion}=q;return publicQuestion;
 }
 async function answer(d,lid,sid,option){
  let l=await owned(d,lid,sid);
- if(!['correct','wrong','taken'].includes(l.result)){
+ if(!['correct','taken'].includes(l.result)){
   const taken=await d.one('SELECT 1 FROM completions WHERE round_id=? AND mishnah_id=? AND revoked_at IS NULL',l.round_id,l.mishnah_id);
   if(taken){await d.run("UPDATE leases SET result='taken' WHERE id=? AND (result IS NULL OR result IN('expired','released'))",lid);return {result:'taken'};}
   check(!l.result&&l.expires_at>now(),'הנעילה פגה. בחרו משנה מחדש.',409);check(l.challenge,'יש לקרוא את המשנה לפני השאלה');
-  const q=JSON.parse(l.challenge);check(q.options.some(o=>o.id===option),'אפשרות תשובה לא תקינה');
-  // One conditional UPDATE and database triggers form a single SQLite transaction.
-  await d.run(`UPDATE leases SET result=CASE WHEN EXISTS(SELECT 1 FROM completions x WHERE x.round_id=leases.round_id AND x.mishnah_id=leases.mishnah_id AND x.revoked_at IS NULL) THEN 'taken' ELSE ? END
-    WHERE id=? AND student_id=? AND result IS NULL AND expires_at>? AND EXISTS(SELECT 1 FROM rounds r WHERE r.id=leases.round_id AND r.finished_at IS NULL) AND EXISTS(SELECT 1 FROM students WHERE id=? AND active=1)`,option===q.correct_id?'correct':'wrong',lid,sid,now(),sid);
+  const q=JSON.parse(l.challenge);check(q.options?.some(o=>o.id===option),'אפשרות תשובה לא תקינה');
+  if(q.answered)return feedback(q);
+  const correct=option===q.correct_id;
+  // Compare-and-swap the challenge too: concurrent answers cannot change a recorded attempt.
+  // Wrong answers retain the lock; only a reread opens the other question.
+  const next=correct?l.challenge:JSON.stringify({...q,answered:true,selected_id:option});
+  await d.run(`UPDATE leases SET challenge=?,result=CASE WHEN EXISTS(SELECT 1 FROM completions x WHERE x.round_id=leases.round_id AND x.mishnah_id=leases.mishnah_id AND x.revoked_at IS NULL) THEN 'taken' ELSE ? END
+    WHERE id=? AND student_id=? AND challenge=? AND result IS NULL AND expires_at>? AND EXISTS(SELECT 1 FROM rounds r WHERE r.id=leases.round_id AND r.finished_at IS NULL) AND EXISTS(SELECT 1 FROM students WHERE id=? AND active=1)`,next,correct?'correct':null,lid,sid,l.challenge,now(),sid);
   l=await owned(d,lid,sid);
+  const saved=l.challenge?JSON.parse(l.challenge):null;
+  if(!l.result&&saved?.answered)return feedback(saved);
  }
- check(['correct','wrong','taken'].includes(l.result),'הסבב או הלימוד השתנו. בחרו משנה מחדש.',409);
- if(l.result==='wrong')return {result:'wrong',until:(await d.one('SELECT until_at FROM cooldowns WHERE student_id=? AND mishnah_id=?',sid,l.mishnah_id))?.until_at};
+ check(['correct','taken'].includes(l.result),'הסבב או הלימוד השתנו. בחרו משנה מחדש.',409);
  if(l.result==='taken')return {result:'taken'};
  const tractate=l.mishnah_id.split(':')[0],t=structure.find(t=>t.id===tractate),total=t.chapters.reduce((a,b)=>a+b,0);
  const {n}=await d.one('SELECT COUNT(*) n FROM completions c JOIN mishnayot m ON m.id=c.mishnah_id WHERE c.round_id=? AND c.revoked_at IS NULL AND m.tractate=?',l.round_id,tractate);
@@ -116,7 +134,7 @@ async function admin(d,route,b,url){
   }return report;
  }
  if(route==='admin/settings'){
-  const stmts=[];for(const [key,min,max] of [['cooldown_seconds',1,86400],['lease_seconds',60,3600]]){check(Number.isInteger(b[key])&&b[key]>=min&&b[key]<=max,'זמן מחוץ לטווח המותר');stmts.push(d.p('UPDATE settings SET value=? WHERE key=?',String(b[key]),key));}
+  const stmts=[];for(const [key,min,max] of [['lease_seconds',60,3600]]){check(Number.isInteger(b[key])&&b[key]>=min&&b[key]<=max,'זמן מחוץ לטווח המותר');stmts.push(d.p('UPDATE settings SET value=? WHERE key=?',String(b[key]),key));}
   await d.db.batch([...stmts,record('settings',b)]);return {ok:true};
  }
  if(route==='admin/ticket'){
@@ -162,9 +180,10 @@ async function handle(req,env){
  if(route==='select'){check(['school','student'].includes(s.role),'כניסה זו מיועדת לתלמידים',403);check(await d.one('SELECT 1 FROM students WHERE id=? AND active=1',b.student_id),'התלמיד לא נמצא');return makeSession(d,req,'student',b.student_id);}
  if(route==='state'){const round=await current(d)||await d.one('SELECT * FROM rounds ORDER BY number DESC LIMIT 1');return json({structure,total:149,round,completed:(await d.all('SELECT mishnah_id FROM completions WHERE round_id=? AND revoked_at IS NULL',round.id)).map(r=>r.mishnah_id),statuses:Object.fromEntries((await d.all('SELECT mishnah_id,status FROM content')).map(r=>[r.mishnah_id,r.status])),my_tickets:(await d.one('SELECT COALESCE(SUM(delta),0) n FROM tickets WHERE student_id=?',s.student_id)).n});}
  if(route==='board')return json({students:await d.all(studentQuery+' WHERE s.active=1 GROUP BY s.id ORDER BY c.name,s.name'),classes:await d.all(classQuery),recent:await d.all('SELECT c.name AS class_name,m.tractate,x.completed_at FROM completions x JOIN classes c ON c.id=x.class_id JOIN mishnayot m ON m.id=x.mishnah_id WHERE x.revoked_at IS NULL ORDER BY x.id DESC LIMIT 10')});
- if(['learn','question','answer','release'].includes(route)){
+ if(['learn','question','answer','release','reread'].includes(route)){
   check(s.role==='student','יש לבחור כיתה ושם לפני הלימוד',403);let result;
   if(route==='learn')result=await acquire(d,s.student_id,b.id);
+  if(route==='reread')result=await reread(d,b.id,s.student_id);
   if(route==='question')result=await challenge(d,b.id,s.student_id);
   if(route==='answer')result=await answer(d,b.id,s.student_id,b.option);
   if(route==='release'){await owned(d,b.id,s.student_id);await d.run("UPDATE leases SET result='released' WHERE id=? AND result IS NULL",b.id);result={ok:true};}return json(result);
