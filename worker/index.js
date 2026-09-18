@@ -1,3 +1,4 @@
+import {learningDayBounds} from './calendar.js';
 import content from '../data/content.json' with {type:'json'};
 import {structure,canon,validateContent,validateStudents} from './validation.js';
 const now=()=>Math.floor(Date.now()/1000);
@@ -47,9 +48,7 @@ async function acquire(d,sid,mid){
  d.p(`INSERT OR IGNORE INTO leases(id,round_id,mishnah_id,student_id,expires_at,content_revision,text,questions)
  SELECT ?,r.id,c.mishnah_id,?,?+CAST((SELECT value FROM settings WHERE key='lease_seconds') AS INTEGER),c.revision,c.text,c.questions
  FROM content c CROSS JOIN rounds r WHERE c.status='ready' AND r.finished_at IS NULL AND (? IS NULL OR c.mishnah_id=?)
- AND NOT EXISTS(SELECT 1 FROM completions x WHERE x.round_id=r.id AND x.mishnah_id=c.mishnah_id AND x.revoked_at IS NULL)
- AND NOT EXISTS(SELECT 1 FROM leases l WHERE l.round_id=r.id AND l.mishnah_id=c.mishnah_id AND l.result IS NULL)
- AND EXISTS(SELECT 1 FROM students WHERE id=? AND active=1) ORDER BY random() LIMIT 1`,lid,sid,t,mid||null,mid||null,sid)]);
+ AND EXISTS(SELECT 1 FROM students WHERE id=? AND active=1) ORDER BY EXISTS(SELECT 1 FROM completions x JOIN tickets tk ON tk.completion_id=x.id WHERE x.round_id=r.id AND x.mishnah_id=c.mishnah_id AND x.student_id=? AND x.revoked_at IS NULL),random() LIMIT 1`,lid,sid,t,mid||null,mid||null,sid,sid)]);
  const l=await d.one('SELECT * FROM leases WHERE student_id=? AND result IS NULL',sid);
  check(l,'אין כרגע משנה מוכנה ופנויה עבורך. אפשר לנסות שוב בהמשך.',409);return {id:l.id,mishnah_id:l.mishnah_id,text:l.text,expires_at:l.expires_at};
 }
@@ -77,30 +76,31 @@ async function challenge(d,lid,sid){
  const q=JSON.parse(saved.challenge);check(!q.answered&&!q.reading,'חזרו לקריאת המשנה לפני השאלה הבאה.',409);
  const {correct_id,index,...publicQuestion}=q;return publicQuestion;
 }
+async function dailyTickets(d,sid,time=now()){
+ const day=learningDayBounds(time);return (await d.one('SELECT COUNT(*) n FROM tickets WHERE student_id=? AND delta=1 AND completion_id IS NOT NULL AND created_at>=? AND created_at<?',sid,day.start,day.end)).n;
+}
 async function answer(d,lid,sid,option){
  let l=await owned(d,lid,sid);
- if(!['correct','taken'].includes(l.result)){
-  const taken=await d.one('SELECT 1 FROM completions WHERE round_id=? AND mishnah_id=? AND revoked_at IS NULL',l.round_id,l.mishnah_id);
-  if(taken){await d.run("UPDATE leases SET result='taken' WHERE id=? AND (result IS NULL OR result IN('expired','released'))",lid);return {result:'taken'};}
-  check(!l.result&&l.expires_at>now(),'הנעילה פגה. בחרו משנה מחדש.',409);check(l.challenge,'יש לקרוא את המשנה לפני השאלה');
+ if(l.result!=='correct'){
+  check(!l.result&&l.expires_at>now(),'זמן הלימוד הסתיים. בחרו משנה מחדש.',409);check(l.challenge,'יש לקרוא את המשנה לפני השאלה');
   const q=JSON.parse(l.challenge);check(q.options?.some(o=>o.id===option),'אפשרות תשובה לא תקינה');
   if(q.answered)return feedback(q);
-  const correct=option===q.correct_id;
-  // Compare-and-swap the challenge too: concurrent answers cannot change a recorded attempt.
-  // Wrong answers retain the lock; only a reread opens the other question.
+  const correct=option===q.correct_id,time=now(),day=learningDayBounds(time);
   const next=correct?l.challenge:JSON.stringify({...q,answered:true,selected_id:option});
-  await d.run(`UPDATE leases SET challenge=?,result=CASE WHEN EXISTS(SELECT 1 FROM completions x WHERE x.round_id=leases.round_id AND x.mishnah_id=leases.mishnah_id AND x.revoked_at IS NULL) THEN 'taken' ELSE ? END
-    WHERE id=? AND student_id=? AND challenge=? AND result IS NULL AND expires_at>? AND EXISTS(SELECT 1 FROM rounds r WHERE r.id=leases.round_id AND r.finished_at IS NULL) AND EXISTS(SELECT 1 FROM students WHERE id=? AND active=1)`,next,correct?'correct':null,lid,sid,l.challenge,now(),sid);
+  // One compare-and-swap transaction records personal completion and atomically enforces the daily quota.
+  // A lease stays in its original round if other learners finish that round while it is open.
+  await d.run(`UPDATE leases SET challenge=?,result=?,answered_at=?,day_start=?,day_end=?
+    WHERE id=? AND student_id=? AND challenge=? AND result IS NULL AND expires_at>? AND EXISTS(SELECT 1 FROM students WHERE id=? AND active=1)`,next,correct?'correct':null,time,day.start,day.end,lid,sid,l.challenge,time,sid);
   l=await owned(d,lid,sid);
   const saved=l.challenge?JSON.parse(l.challenge):null;
   if(!l.result&&saved?.answered)return feedback(saved);
  }
- check(['correct','taken'].includes(l.result),'הסבב או הלימוד השתנו. בחרו משנה מחדש.',409);
- if(l.result==='taken')return {result:'taken'};
+ check(l.result==='correct','הלימוד השתנה. בחרו משנה מחדש.',409);
  const tractate=l.mishnah_id.split(':')[0],t=structure.find(t=>t.id===tractate),total=t.chapters.reduce((a,b)=>a+b,0);
- const {n}=await d.one('SELECT COUNT(*) n FROM completions c JOIN mishnayot m ON m.id=c.mishnah_id WHERE c.round_id=? AND c.revoked_at IS NULL AND m.tractate=?',l.round_id,tractate);
- const rnd=await d.one('SELECT * FROM rounds WHERE id=?',l.round_id);
- return {result:'correct',ticket_awarded:!!(await d.one('SELECT 1 FROM tickets WHERE completion_id IN(SELECT id FROM completions WHERE round_id=? AND mishnah_id=? AND student_id=? AND revoked_at IS NULL)',l.round_id,l.mishnah_id,sid)),tractate_completed:n===total?tractate:null,all_completed:!!rnd.finished_at,bonus_round:rnd.finished_at&&rnd.number===1?2:null};
+ const {n}=await d.one('SELECT COUNT(DISTINCT c.mishnah_id) n FROM completions c JOIN mishnayot m ON m.id=c.mishnah_id WHERE c.round_id=? AND c.revoked_at IS NULL AND m.tractate=?',l.round_id,tractate);
+ const rnd=await d.one('SELECT * FROM rounds WHERE id=?',l.round_id),person=await d.one('SELECT is_staff FROM students WHERE id=?',sid);
+ const awardedBefore=await d.one('SELECT 1 FROM tickets t JOIN completions c ON c.id=t.completion_id WHERE c.round_id=? AND c.mishnah_id=? AND c.student_id=? AND c.revoked_at IS NULL',l.round_id,l.mishnah_id,sid);
+ return {result:'correct',school_added:!!l.school_added,ticket_awarded:!!l.ticket_awarded,ticket_reason:person.is_staff?'staff':l.ticket_awarded?'awarded':awardedBefore?'already_awarded':'daily_limit',daily_tickets:await dailyTickets(d,sid),daily_limit:3,tractate_completed:l.school_added&&n===total?tractate:null,all_completed:!!l.school_added&&!!rnd.finished_at,next_round:rnd.finished_at?rnd.number+1:null};
 }
 const studentQuery=`SELECT s.id,s.name,c.name AS class_name,COALESCE(SUM(t.delta),0) AS tickets FROM students s JOIN classes c ON c.id=s.class_id LEFT JOIN tickets t ON t.student_id=s.id`;
 const classQuery=`SELECT c.id,c.name,count(x.id) AS contribution FROM classes c LEFT JOIN completions x ON x.class_id=c.id AND x.revoked_at IS NULL GROUP BY c.id HAVING count(x.id)>0 OR EXISTS(SELECT 1 FROM students s WHERE s.class_id=c.id AND s.active=1) ORDER BY c.name`;
@@ -188,7 +188,7 @@ async function handle(req,env){
   check(await d.one('SELECT 1 FROM students WHERE id=? AND active=1 AND is_staff=?',b.student_id,staff),'השם אינו זמין בסוג הכניסה הזה',403);
   return makeSession(d,req,staff?'staff':'student',b.student_id);
  }
- if(route==='state'){const round=await current(d)||await d.one('SELECT * FROM rounds ORDER BY number DESC LIMIT 1');return json({structure,total:149,round,completed:(await d.all('SELECT mishnah_id FROM completions WHERE round_id=? AND revoked_at IS NULL',round.id)).map(r=>r.mishnah_id),statuses:Object.fromEntries((await d.all('SELECT mishnah_id,status FROM content')).map(r=>[r.mishnah_id,r.status])),my_tickets:(await d.one('SELECT COALESCE(SUM(delta),0) n FROM tickets WHERE student_id=?',s.student_id)).n});}
+ if(route==='state'){const round=await current(d)||await d.one('SELECT * FROM rounds ORDER BY number DESC LIMIT 1');return json({structure,total:149,round,rounds_completed:(await d.one('SELECT COUNT(*) n FROM rounds WHERE finished_at IS NOT NULL')).n,daily_tickets:await dailyTickets(d,s.student_id),daily_limit:3,completed:(await d.all('SELECT DISTINCT mishnah_id FROM completions WHERE round_id=? AND revoked_at IS NULL',round.id)).map(r=>r.mishnah_id),statuses:Object.fromEntries((await d.all('SELECT mishnah_id,status FROM content')).map(r=>[r.mishnah_id,r.status])),my_tickets:(await d.one('SELECT COALESCE(SUM(delta),0) n FROM tickets WHERE student_id=?',s.student_id)).n});}
  if(route==='board')return json({students:await d.all(studentQuery+' WHERE s.active=1 AND s.is_staff=0 GROUP BY s.id ORDER BY c.name,s.name'),classes:await d.all(classQuery),recent:await d.all('SELECT c.name AS class_name,m.tractate,x.completed_at FROM completions x JOIN classes c ON c.id=x.class_id JOIN mishnayot m ON m.id=x.mishnah_id WHERE x.revoked_at IS NULL ORDER BY x.id DESC LIMIT 10')});
  if(['learn','question','answer','release','reread'].includes(route)){
   check(['student','staff'].includes(s.role),'יש לבחור שם לפני הלימוד',403);let result;
