@@ -256,8 +256,10 @@ def answer(db, lid, sid, option):
     if totals(db,rnd["id"])==TOTAL:
         db.execute("UPDATE rounds SET finished_at=? WHERE id=?",(now(),rnd["id"]))
         result["all_completed"]=True
-        if rnd["number"]==1:
-            result["bonus_round"]=new_round(db)
+        # Open exactly one next round automatically after every completed round.
+        # Because this runs inside BEGIN IMMEDIATE, concurrent final answers cannot
+        # create two rounds. new_round() derives the next sequential number.
+        result["bonus_round"]=new_round(db)
     return result
 
 def csv_output(columns, rows):
